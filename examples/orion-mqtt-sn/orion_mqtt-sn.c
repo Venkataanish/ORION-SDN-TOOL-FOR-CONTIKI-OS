@@ -511,6 +511,11 @@ PROCESS_THREAD(orion_mqtt_process, ev, data)
 
   printf("ORION MQTT Process\n");
 
+
+
+
+
+
   if(init_config() != 1) {
     PROCESS_EXIT();
   }
