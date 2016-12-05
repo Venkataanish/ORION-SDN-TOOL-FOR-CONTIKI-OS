@@ -5,6 +5,35 @@
 
 #include "mqtt.h"
 
+#include "cfs/cfs.h"
+#include "cfs/cfs-coffee.h"
+
+#include "serial-shell.h"
+
+
+
+#include "contiki.h"
+#include "contiki-net.h"
+#include "contiki-lib.h"
+#include "lib/random.h"
+
+#include "sys/pt.h"
+#include "net/rpl/rpl.h"
+#include "net/ip/uip.h"
+#include "net/ipv6/uip-ds6.h"
+#include "dev/leds.h"
+
+#include "tcp-socket.h"
+
+#include "lib/assert.h"
+#include "lib/list.h"
+#include "sys/cc.h"
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+
 #include "rpl/rpl-private.h"
 
 #include "net/rpl/rpl.h"
@@ -102,6 +131,12 @@ static uint8_t state;
 PROCESS_NAME(orion_mqtt_process);
 AUTOSTART_PROCESSES(&orion_mqtt_process);
 
+typedef struct mqtt_data_packet_handle{
+   char* dev_id;
+   char* chip_temperature;
+   char* VDD_level;
+}mqtt_data_packet_handle_t;
+
 typedef struct mqtt_client_config {
   char org_id[CONFIG_ORG_ID_LEN];
   char type_id[CONFIG_TYPE_ID_LEN];
@@ -163,6 +198,19 @@ static void mqtt_broker_connect(void);
 static void get_global_address(void);
 static void state_machine(void);
 
+static void
+call_event(struct mqtt_connection *conn,
+           mqtt_event_t event,
+           void *data);
+
+static void
+handle_unsuback(struct mqtt_connection *conn);
+
+static void
+parse_publish_vhdr(struct mqtt_connection *conn,
+                   uint32_t *pos,
+                   const uint8_t *input_data_ptr,
+                   int input_data_len);
 
 #endif
 

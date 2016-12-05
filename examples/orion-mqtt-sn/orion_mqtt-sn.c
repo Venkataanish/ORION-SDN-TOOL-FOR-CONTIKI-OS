@@ -4,6 +4,83 @@
 
 #include "utile.h"
 
+
+static void
+call_event(struct mqtt_connection *conn,
+           mqtt_event_t event,
+           void *data)
+{
+  conn->event_callback(conn, event, data);
+  process_post(conn->app_process, mqtt_update_event, NULL);
+}
+
+static void
+handle_unsuback(struct mqtt_connection *conn)
+{
+  DBG("MQTT - Got UNSUBACK\n");
+
+  conn->out_packet.qos_state = MQTT_QOS_STATE_GOT_ACK;
+  conn->in_packet.mid = (conn->in_packet.payload[0] << 8) |
+    (conn->in_packet.payload[1]);
+
+  if(conn->in_packet.mid != conn->out_packet.mid) {
+    DBG("MQTT - Warning, got UNSUBACK with none matching MID. Currently there is"
+        "no support for several concurrent UNSUBSCRIBE messages.\n");
+  }
+
+  call_event(conn, MQTT_EVENT_UNSUBACK, &conn->in_packet.mid);
+}
+static void
+parse_publish_vhdr(struct mqtt_connection *conn,
+                   uint32_t *pos,
+                   const uint8_t *input_data_ptr,
+                   int input_data_len)
+{
+  uint16_t copy_bytes;
+
+  /* Read out topic length */
+  if(conn->in_packet.topic_len_received == 0) {
+    conn->in_packet.topic_len = (input_data_ptr[(*pos)++] << 8);
+    conn->in_packet.byte_counter++;
+    if(*pos >= input_data_len) {
+      return;
+    }
+    conn->in_packet.topic_len |= input_data_ptr[(*pos)++];
+    conn->in_packet.byte_counter++;
+    conn->in_packet.topic_len_received = 1;
+
+    DBG("MQTT - Read PUBLISH topic len %i\n", conn->in_packet.topic_len);
+    /* WARNING: Check here if TOPIC fits in payload area, otherwise error */
+  }
+
+  /* Read out topic */
+  if(conn->in_packet.topic_len_received == 1 &&
+     conn->in_packet.topic_received == 0) {
+    copy_bytes = MIN(conn->in_packet.topic_len - conn->in_packet.topic_pos,
+                     input_data_len - *pos);
+    DBG("MQTT - topic_pos: %i copy_bytes: %i", conn->in_packet.topic_pos,
+        copy_bytes);
+    memcpy(&conn->in_publish_msg.topic[conn->in_packet.topic_pos],
+           &input_data_ptr[*pos],
+           copy_bytes);
+    (*pos) += copy_bytes;
+    conn->in_packet.byte_counter += copy_bytes;
+    conn->in_packet.topic_pos += copy_bytes;
+
+    if(conn->in_packet.topic_len - conn->in_packet.topic_pos == 0) {
+      DBG("MQTT - Got topic '%s'", conn->in_publish_msg.topic);
+      conn->in_packet.topic_received = 1;
+      conn->in_publish_msg.topic[conn->in_packet.topic_pos] = '\0';
+      conn->in_publish_msg.payload_length =
+        conn->in_packet.remaining_length - conn->in_packet.topic_len - 2;
+      conn->in_publish_msg.payload_left = conn->in_publish_msg.payload_length;
+    }
+
+    /* Set this once per incomming publish message */
+    conn->in_publish_msg.first_chunk = 1;
+  }
+}
+
 /*NOW THE CONTIKI PROCESS STARTS*/
 PROCESS(orion_mqtt_process, "Orion mqtt process");
 /*---------------------------------------------------------------------------*/
@@ -251,11 +328,97 @@ static void manipulate_length(char * buff_ptr, int remaining, int length){
 
 /*---------------------------------------------------------------------------*/
 /* A function which is used to subscribe to topic in IBM quickstart format
+ * It does the following things:
+ *
+ * It checks the status if the client has successfully subscribed. If yes,
+ * then parse the packet to get:
+ * devide-ID
+ * On-Chip-Temperature
+ * VDD_level
+ *
+ * If the subscribe is not successful, then the client un-subscribes itself.
+ *
+ * The parsed contents of the CC2538 openmote are read into a buffer mq_buf
+ * and then written to a file test.txt in coffee file system.
+ *
+ * Optionally, the different contents that are published are stored in a
+ * structure for future use. This acts as a centralized control.
+ *
  * returns nothing */
 static void subscribe(void)
 {
-  mqtt_subscribe(&connect, NULL, sub_topic, MQTT_QOS_LEVEL_0);
+  mqtt_status_t status ;
+  mqtt_data_packet_handle_t orion_data;
 
+  uint32_t header_size = MQTT_FHDR_SIZE;
+  uint32_t *pos = &header_size;
+  uint8_t temp[MQTT_INPUT_BUFF_SIZE];
+
+
+  int input_data_len ;
+  int fd = 0;
+
+  char *mq_buf;
+  char *pchk;
+
+  int datacnt = 0;
+  int tcount ;
+  int parse_count = 1;
+
+  /*Subscribe and then check if the subscribe is successful*/
+  status = mqtt_subscribe(&connect, NULL, sub_topic, MQTT_QOS_LEVEL_0);
+  input_data_len = strlen(sub_topic);
+
+  if(status == MQTT_STATUS_OK){
+	  parse_publish_vhdr(&connect,pos,connect.out_buffer,input_data_len);
+      for(tcount = 0, datacnt = MQTT_FHDR_SIZE; datacnt< MQTT_FHDR_SIZE + connect.in_packet.remaining_length;
+    		  datacnt++, tcount++){
+          temp[tcount] = connect.in_packet.payload[datacnt];
+      }
+  }
+  /*If the subscribe is not successful, then un-subscribe and handle it*/
+  else{
+	  printf("MQTT-STATUS NOT SUBCRIBED\n");
+	  mqtt_unsubscribe(&connect,NULL,sub_topic);
+	  handle_unsuback(&connect);
+	  return;
+  }
+
+  /*Get the contents of the publish payload into a buffer*/
+  sprintf(mq_buf,"device-id:%s RSSI(dBm):%s On-ChipTemp(mC):%s VDD3(mV):%s",(char *)temp);
+
+
+  /*Open a file 'test.txt' and write the contents to it */
+  fd = cfs_open("test.txt", CFS_READ | CFS_WRITE);
+  if(fd >= 0) {
+   cfs_seek(fd, 0, CFS_SEEK_CUR);
+   cfs_write(fd, mq_buf, sizeof(mq_buf));
+   cfs_close(fd);
+  }
+
+  /*To establish centralized control, parse the string and individually tokenize the
+   * values of the CC2538 device into the structure
+   */
+  pchk = strtok(mq_buf," ");
+
+  while(pchk){
+
+	pchk = strtok(NULL," ");
+
+	if(parse_count == 1){
+		strcpy(orion_data.dev_id,pchk);
+	}
+	else if(parse_count == 2){
+
+		strcpy(orion_data.chip_temperature,pchk);
+	}
+
+	else if(parse_count == 3){
+
+		strcpy(orion_data.VDD_level,pchk);
+	}
+	parse_count++;
+  }
 }
 
 /*---------------------------------------------------------------------------*/
@@ -276,12 +439,9 @@ static void publish(void)
   buf_ptr = mymqtt_buffer;
   char def_rt_str[64];
 
-  length = snprintf(buf_ptr, remaining,"{"
-                 "\"d\": %s{"
-                 "\"myName\":\"%s\","
-                 "\"Seq #\":%d,"
-                 "\"Uptime (sec)\":%lu",
-                 linkaddr_node_addr.u8, BOARD_STRING, seq_num, clock_seconds());
+  length = snprintf(buf_ptr, remaining,
+                 "d:%x",
+                 linkaddr_node_addr.u8);
 
   if(!len_check(length)) {
     return;
@@ -292,7 +452,7 @@ static void publish(void)
   memset(def_rt_str, 0, sizeof(def_rt_str));
   get_length(def_rt_str, sizeof(def_rt_str), uip_ds6_defrt_choose());
 
-  length = snprintf(buf_ptr, remaining, ",\"Def Route\":\"%s\",\"RSSI (dBm)\":%d", def_rt_str, def_rt_rssi);
+  length = snprintf(buf_ptr, remaining, " RSSI(dBm):%d", def_rt_rssi);
 
   if(!len_check(length)) {
       return;
@@ -300,26 +460,20 @@ static void publish(void)
 
   manipulate_length(buf_ptr,remaining,length);
 
-  length = snprintf(buf_ptr, remaining, ",\"On-Chip Temp (mC)\":%d", cc2538_temp_sensor.value(CC2538_SENSORS_VALUE_TYPE_CONVERTED));
+  length = snprintf(buf_ptr, remaining, " On-ChipTemp(mC):%d", cc2538_temp_sensor.value(CC2538_SENSORS_VALUE_TYPE_CONVERTED));
 
   if(!len_check(length)) {
       return;
     }
   manipulate_length(buf_ptr,remaining,length);
 
-  length = snprintf(buf_ptr, remaining, ",\"VDD3 (mV)\":%d", vdd3_sensor.value(CC2538_SENSORS_VALUE_TYPE_CONVERTED));
+  length = snprintf(buf_ptr, remaining, " VDD3(mV):%d", vdd3_sensor.value(CC2538_SENSORS_VALUE_TYPE_CONVERTED));
 
   if(!len_check(length)) {
         return;
       }
   manipulate_length(buf_ptr,remaining,length);
 
-
-  length = snprintf(buf_ptr, remaining, "}}");
-
-  if(!len_check(length)) {
-          return;
-        }
   mymqtt_length = strlen(mymqtt_buffer);
   mqtt_publish(&connect, NULL, pub_topic, (uint8_t *)mymqtt_buffer, mymqtt_length , MQTT_QOS_LEVEL_0, MQTT_RETAIN_OFF);
 }
