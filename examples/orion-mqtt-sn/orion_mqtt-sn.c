@@ -277,11 +277,11 @@ static void publish(void)
   char def_rt_str[64];
 
   length = snprintf(buf_ptr, remaining,"{"
-                 "\"d\":{"
+                 "\"d\": %s{"
                  "\"myName\":\"%s\","
                  "\"Seq #\":%d,"
                  "\"Uptime (sec)\":%lu",
-                 BOARD_STRING, seq_num, clock_seconds());
+                 linkaddr_node_addr.u8, BOARD_STRING, seq_num, clock_seconds());
 
   if(!len_check(length)) {
     return;
@@ -499,7 +499,7 @@ static void state_machine(void)
  * registered state.
  *
  * In the interval of publish periodic timer, check if the state of CC2538 is
- * in one of the 7 states. Then do things accordingly. Preferable publish.
+ * in one of the 7 states. Then do things accordingly. Preferably publish.
  *
  * In the interval of the echo request, the global address of the CC2538 mote
  * is obtained before proceeding further.
@@ -510,10 +510,6 @@ PROCESS_THREAD(orion_mqtt_process, ev, data)
   PROCESS_BEGIN();
 
   printf("ORION MQTT Process\n");
-
-
-
-
 
 
   if(init_config() != 1) {
