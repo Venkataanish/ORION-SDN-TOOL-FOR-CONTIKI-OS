@@ -28,4 +28,4 @@ The steps to make the subscribing and publishing possible is given below:
 13). Now run mosquitto_sub -d -t iot-2/cmd/dev/fmt/json on one cutecom User Interface
              mosquitto_pub -h fd00::1 -m "dev" -t iot-2/evt/status/fmt/json on the second interface
 14). A text file with the Device ID, On-Chip temperature and VDD level will be generated.
-15). In order to exted this functionality to outside the localhost, border router functionality is required and will be seen as a future scope. 
+15). In order to exted this functionality to outside the localhost, border router functionality is required. 
