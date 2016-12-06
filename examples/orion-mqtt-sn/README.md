@@ -1,7 +1,7 @@
 
 
 
-              				                                  ORION-MQTT
+              				                             ORION-MQTT
   
 This version of MQTT is used to publish and subscribe to a topic and receive informtion about CC2538 open motes such as:
 
