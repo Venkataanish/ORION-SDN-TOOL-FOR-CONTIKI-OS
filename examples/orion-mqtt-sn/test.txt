@@ -1,0 +1,2 @@
+device-id:00124b17ab25 RSSI(dBm):73 On-ChipTemp(mC):18096 VDD3(mV):2088
+device-id:00124b19ab74 RSSI(dBm):72 On-ChipTemp(mC):16789 VDD3(mV):2300
